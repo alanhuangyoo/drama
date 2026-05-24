@@ -1,5 +1,5 @@
 BasicSettings:
-  ImageSize: 64
+  ImageSize: [64, 64]  # YAML pull this as tuple in Python
   ImageChannel: 3
   ReplayBufferOnGPU: True
   Seed: 3710
@@ -63,19 +63,20 @@ Models:
       Epsilon: 1.0e-20
     Encoder:
       Depth: 16
-      Mults:  [1, 2, 3, 4, 4]
+      Mults: [ 1, 2, 4, 8 ] #[1, 2, 3, 4, 4] ; [1, 2, 4, 8]
       Norm: rms
       Kernel: 5
+      FirstStrideOne: False
       Padding: same
-      InputSize: [3, 64, 64]
+      InputSize: [ 3, 64, 64 ]
     Decoder:
       Depth: 16
-      Mults:  [1, 2, 3, 4, 4]
+      Mults: [ 1, 2, 4, 8 ] # [1, 2, 3, 4, 4] ; [1, 2, 4, 8]
       Norm: rms
       Kernel: 5
       Padding: same
       FirstStrideOne: True
-      InputSize: [3, 64, 64]
+      InputSize: [ 3, 64, 64 ]
       FinalLayerSigmoid: True
     Reward:
       HiddenUnits: 256
@@ -92,7 +93,6 @@ Models:
       d_intermediate: 0
       ssm_cfg:
         d_state: 16
-    
 
   Agent:
     dtype: float32
@@ -143,6 +143,6 @@ Models:
         HiddenUnits: 512 # Andrychowicz2020 wider critic network seems better  
 Wandb:
   Init:
-    Mode: online
+    Mode: disabled
     Project: Mamba_dreamer
 n: standard

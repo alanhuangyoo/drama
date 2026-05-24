@@ -1,3 +1,7 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["MUJOCO_GL"] = "osmesa"
+os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 import gymnasium
 import argparse
 import numpy as np
@@ -6,18 +10,18 @@ import torch
 from collections import deque
 from tqdm import tqdm
 import colorama
-import os
+
 import pandas as pd
 
 from utils import seed_np_torch, WandbLogger
 from replay_buffer import ReplayBuffer
 import agents
 from sub_models.world_models import WorldModel
-from mamba_ssm import InferenceParams
 from line_profiler import profile
 import yaml
 from envs.my_memory_maze import MemoryMaze
 from envs.my_atari import Atari
+from env.my_dmc import DMControl
 from eval import eval_episodes
 import warnings
 import ast
@@ -99,16 +103,36 @@ def joint_train_world_model_agent(config, logdir,
 
 
     if config.BasicSettings.Env_name.startswith('ALE'):
-        env = Atari(config.BasicSettings.Env_name, size=(config.BasicSettings.ImageSize,config.BasicSettings.ImageSize), seed=config.BasicSettings.Seed)
+        env = Atari(config.BasicSettings.Env_name, size=config.BasicSettings.ImageSize, seed=config.BasicSettings.Seed)
     elif config.BasicSettings.Env_name.startswith('memory'):
-        env = MemoryMaze(config.BasicSettings.Env_name, size=(config.BasicSettings.ImageSize,config.BasicSettings.ImageSize), seed=config.BasicSettings.Seed)
+        env = MemoryMaze(config.BasicSettings.Env_name, size=config.BasicSettings.ImageSize, seed=config.BasicSettings.Seed)
+    elif config.BasicSettings.Env_name.startswith('dm_'):
+        # Parse dm_control environment name: dm_domain_task
+        # Example: dm_cheetah_run, dm_walker_walk, dm_humanoid_stand
+        parts = config.BasicSettings.Env_name.split('_')
+        domain_name = parts[1]
+        task_name = '_'.join(parts[2:])  # Handle multi-word tasks
+        env = DMControl(
+            domain_name=domain_name,
+            task_name=task_name,
+            action_repeat=config.BasicSettings.ActionRepeat if hasattr(config.BasicSettings, 'ActionRepeat') else 2,
+            size=config.BasicSettings.ImageSize,
+            camera_id=config.BasicSettings.CameraId if hasattr(config.BasicSettings, 'CameraId') else 0,
+            seed=config.BasicSettings.Seed,
+            length=config.BasicSettings.MaxEpisodeSteps if hasattr(config.BasicSettings, 'MaxEpisodeSteps') else 1000
+        )
+        is_discrete = False
     else:
         assert ValueError(f'Unknown environment name: {config.BasicSettings.Env_name}')
     print("Current env: " + colorama.Fore.YELLOW + f"{config.BasicSettings.Env_name}" + colorama.Style.RESET_ALL)
 
-    atari_benchmark_df = pd.read_csv("atari_performance.csv", index_col='Task', usecols=lambda column: column in ['Task', 'Alien', 'Amidar', 'Assault', 'Asterix', 'BankHeist', 'BattleZone', 'Boxing', 'Breakout', 'ChopperCommand', 'CrazyClimber', 'DemonAttack', 'Freeway', 'Frostbite', 'Gopher', 'Hero', 'Jamesbond', 'Kangaroo', 'Krull', 'KungFuMaster', 'MsPacman', 'Pong', 'PrivateEye', 'Qbert', 'RoadRunner', 'Seaquest', 'UpNDown'])
-    atari_pure_name = config.BasicSettings.Env_name.split('/')[-1].split('-')[0]
-    game_benchmark_df = atari_benchmark_df.get(atari_pure_name)
+    # Benchmark handling (only for Atari)
+    if config.BasicSettings.Env_name.startswith('ALE'):
+        atari_benchmark_df = pd.read_csv("atari_performance.csv", index_col='Task', usecols=lambda column: column in ['Task', 'Alien', 'Amidar', 'Assault', 'Asterix', 'BankHeist', 'BattleZone', 'Boxing', 'Breakout', 'ChopperCommand', 'CrazyClimber', 'DemonAttack', 'Freeway', 'Frostbite', 'Gopher', 'Hero', 'Jamesbond', 'Kangaroo', 'Krull', 'KungFuMaster', 'MsPacman', 'Pong', 'PrivateEye', 'Qbert', 'RoadRunner', 'Seaquest', 'UpNDown'])
+        atari_pure_name = config.BasicSettings.Env_name.split('/')[-1].split('-')[0]
+        game_benchmark_df = atari_benchmark_df.get(atari_pure_name)
+    else:
+        game_benchmark_df = None
     
     sum_reward = 0
     current_ob, info = env.reset()
@@ -127,7 +151,15 @@ def joint_train_world_model_agent(config, logdir,
                 else:
                     context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1).to(world_model.device))
                     model_context_action = np.stack(list(context_action))
-                    model_context_action = rearrange(torch.Tensor(model_context_action).to(world_model.device), "L -> 1 L")
+
+                    # FIXED: Handle both discrete and continuous actions
+                    if is_discrete:
+                        # Discrete: shape is (L,) -> reshape to (1, L)
+                        model_context_action = rearrange(torch.Tensor(model_context_action).to(world_model.device), "L -> 1 L")
+                    else:
+                        # Continuous: shape is (L, A) -> reshape to (1, L, A)
+                        model_context_action = rearrange(torch.Tensor(model_context_action).to(world_model.device), "L A -> 1 L A")
+                    
                     if world_model.model == 'Transformer':
                         prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
                     elif world_model.model == 'Mamba' or world_model.model == 'Mamba2':
@@ -357,10 +389,16 @@ if __name__ == "__main__":
         dummy_env = Atari(config.BasicSettings.Env_name)
     elif config.BasicSettings.Env_name.startswith('memory'):
         dummy_env = MemoryMaze(config.BasicSettings.Env_name)
+    elif config.BasicSettings.Env_name.startswith('dm_'):
+        parts = config.BasicSettings.Env_name.split('_')
+        domain_name = parts[1]
+        task_name = '_'.join(parts[2:])
+        dummy_env = DMControl(domain_name=domain_name, task_name=task_name)
     else:
-        assert ValueError(f'Unknown environment name: {config.BasicSettings.Env_name}')
+        raise ValueError(f'Unknown environment name: {config.BasicSettings.Env_name}')
 
-    action_dim = dummy_env.action_space.n
+    action_dim = dummy_env.action_space.n if hasattr(dummy_env.action_space, 'n') else dummy_env.action_space.shape[0]
+    is_discrete = hasattr(dummy_env.action_space, 'discrete') and dummy_env.action_space.discrete
 
     # build world model and agent
     world_model = build_world_model(config, action_dim, device=device)
@@ -380,7 +418,9 @@ if __name__ == "__main__":
     # build replay buffer
     replay_buffer = ReplayBuffer(
         config,
-        device=device
+        device=device,
+        action_dim=action_dim,
+        is_discrete=is_discrete
     )
 
     # train

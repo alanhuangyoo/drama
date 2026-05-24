@@ -3,20 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 
 
-class MLP(nn.Module):
-    """
-    A flexible MLP module that supports standard and gated MLP functionality.
-
-    Args:
-        in_features (int): Input feature dimension.
-        hidden_features (int, optional): Hidden layer dimension. Defaults to 8/3 of in_features.
-        out_features (int, optional): Output feature dimension. Defaults to in_features.
-        dropout (float): Dropout probability.
-        activation (callable): Activation function. Defaults to F.silu.
-        bias (bool): Whether to include bias in the linear layers.
-        multiple_of (int): Ensures hidden_features is a multiple of this value.
-        use_gate_mlp (bool): Whether to use the gated MLP mechanism.
-    """ 
+class GatedMLP(nn.Module):
     def __init__(
         self,
         in_features,
@@ -48,8 +35,8 @@ class MLP(nn.Module):
         if self.use_gate_mlp:
             assert self.activation == F.gelu, (
                 "It is recommended to use GELU activation when use_gate_mlp=True, "
-                "as suggested in the original paper."
-            )
+                "as suggested in the original paper.")
+
     def forward(self, x):
         y = self.fc1(x)
         if self.use_gate_mlp:
@@ -58,5 +45,4 @@ class MLP(nn.Module):
         else:
             y = self.activation(y)
         y = self.fc2(y)
-        # y = self.dropout(y)
         return y

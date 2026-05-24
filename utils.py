@@ -39,11 +39,10 @@ class Logger():
 
 
 
-class WandbLogger():
+class WandbLogger:
     def __init__(self, config, project=None, mode='online'):
         """
         Initialize the Logger class.
-
         Args:
             path (str): Path to the directory where logs will be saved. This can be used to define the run name in W&B.
             project (str, optional): Name of the W&B project. Defaults to None.
@@ -51,10 +50,10 @@ class WandbLogger():
         # Initialize a W&B run with the given project and path as the run name
         pure_env_name = config.BasicSettings.Env_name.split('/')[-1].split('-')[0]
         run_name = f"{config.Models.WorldModel.Backbone}_{config.Models.Agent.Policy}_{pure_env_name}_seed{config.BasicSettings.Seed}"
+        # Initialize wandb with the complete name (including run ID will be auto-appended by wandb)
         self.run = wandb.init(project=project, config=config, mode=mode, name=run_name)
-        self.run.name = f"{self.run.name}_{self.run.id}"
+        # self.run.name = f"{self.run.name}_{self.run.id}"
         self.tag_step = {}
-
 
     def log(self, tag, value, global_step):
         """

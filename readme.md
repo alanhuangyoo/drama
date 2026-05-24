@@ -18,20 +18,36 @@ If you find Drama useful, please reference in your paper:
 ## Training and Evaluating Instructions
 ### Requirements
 
-- **Python**: 3.10
+- **Python**: 3.12
 - **Operating System**: Ubuntu 22.04 recommended (for Windows, use Docker)
 
 ### Setup Instructions
 
 1. Create and activate a Conda environment:
 ```
-conda create --name drama python=3.10
+conda create --name drama python=3.12
 conda activate drama
 ```
 2. Note that because `mamba-ssm` in _requirements.txt_ requires `pytorch`, so one should install `pytorch` before _requirements.txt_.
 ```
-pip install torch==2.2.1
-pip install -r reuqirements.txt
+pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+3. Install `mamba-ssm` manually:
+```
+# Install build tools for mamba-ssm
+pip install ninja packaging "setuptools>=70.0.0,<76.0.0"
+
+# This is required BEFORE mamba-ssm
+pip install causal-conv1d>=1.4.0 --no-build-isolation
+
+# Use --no-build-isolation to avoid torch version conflicts
+pip install mamba-ssm==2.2.6.post3 --no-build-isolation
+```
+
+4. Now install the rest of the requirements:
+```
+pip install -r requirements.txt
 ```
 ### Docker Instructions
 ---

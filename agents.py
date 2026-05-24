@@ -294,6 +294,7 @@ class PPOAgent(nn.Module):
         self.use_amp = conf.BasicSettings.Use_amp
         self.tensor_dtype = torch.bfloat16 if self.use_amp else torch.float32
         self.action_dim = action_dim
+        self.is_discrete = is_discrete
         self.unimix_ratio = conf.Models.Agent.Unimix_ratio
         self.device = device
 
@@ -312,10 +313,24 @@ class PPOAgent(nn.Module):
                 RMSNorm(actor_hidden_dim),
                 act()
             ])
-        self.actor = nn.Sequential(
-            *actor,
-            layer_init(nn.Linear(actor_hidden_dim, action_dim), std=0.001)
-        ).to(device)
+        
+        # NEW: Different output heads for discrete vs continuous
+        if is_discrete:
+            # Discrete: output logits for categorical distribution
+            self.actor = nn.Sequential(
+                *actor,
+                layer_init(nn.Linear(actor_hidden_dim, action_dim), std=0.001)
+            ).to(device)
+        else:
+            # Continuous: output mean and log_std for Gaussian distribution
+            self.actor_mean = nn.Sequential(
+                *actor,
+                layer_init(nn.Linear(actor_hidden_dim, action_dim), std=0.001)
+            ).to(device)
+
+        # Log std can be state-dependent or a learned parameter
+        # Using state-independent for simplicity (common in PPO)
+        self.actor_log_std = nn.Parameter(torch.zeros(1, action_dim)).to(device)
 
         critic = [
             layer_init(nn.Linear(feat_dim, critic_hidden_dim, bias=True)),
@@ -352,21 +367,36 @@ class PPOAgent(nn.Module):
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda step: 1.0) # No lr schedule but neccessary for the warm up
         self.warmup_scheduler = LinearWarmup(self.optimizer, warmup_period=conf.Models.Agent.PPO.Warmup_steps)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+    
     @profile
     def get_logp_val_entr(self, latent, action, longer_value=True):
+        """Get log probability, value, and entropy for given latent and action."""
         if longer_value:
-            logits = self.actor(latent[:, :-1])
+            actor_input = latent[:, :-1]
         else:
-            logits = self.actor(latent)
+            actor_input = latent
+            
         value = self.critic(latent)
-        dist = distributions.Categorical(logits=logits)
-        logp_prob = dist.log_prob(action)
-        entropy = dist.entropy()
+        
+        if self.is_discrete:
+            # Discrete actions
+            logits = self.actor(actor_input)
+            dist = distributions.Categorical(logits=logits)
+            logp_prob = dist.log_prob(action)
+            entropy = dist.entropy()
+        else:
+            # Continuous actions
+            mean = self.actor_mean(actor_input)
+            std = torch.exp(self.actor_log_std).expand_as(mean)
+            dist = Normal(mean, std)
+            logp_prob = dist.log_prob(action).sum(dim=-1)  # Sum over action dimensions
+            entropy = dist.entropy().sum(dim=-1)  # Sum over action dimensions
 
-        return logp_prob, value, entropy
-    
+        return logp_prob, value, entropy    
     
     def unimix(self, logits):
+        if not self.is_discrete:
+            return logits  # No unimix for continuous
         # uniform noise mixing
         if self.unimix_ratio > 0:
             probs = F.softmax(logits, dim=-1)
@@ -376,8 +406,13 @@ class PPOAgent(nn.Module):
         return logits
 
     def sample_as_env_action(self, latent, greedy=False):
-            action, _ = self.sample(latent, greedy)
-            return action.detach().cpu().squeeze(-1).numpy()    
+        action, _ = self.sample(latent, greedy)
+        if self.is_discrete:
+            return action.detach().cpu().squeeze(-1).numpy()
+        else:
+            # Continuous actions: return as numpy array
+            return action.detach().cpu().numpy()
+
     @profile
     def comput_loss(self, latent, action, logp_old, advs, rtgs, slow_return):
 
@@ -455,12 +490,23 @@ class PPOAgent(nn.Module):
         self.train()
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             feat_dim = latent.shape[-1]
-            dist = distributions.Categorical(logits=old_logits)
-            old_logp = dist.log_prob(action)
+            if self.is_discrete:
+                # old_logits: (B, T, action_dim), action: (B, T)
+                dist_old = distributions.Categorical(logits=old_logits)
+                old_logp = dist_old.log_prob(action)  # (B, T)
+                flatten_latent = latent[:, :-1].reshape(-1, feat_dim)   # (B*T, D)
+                flatten_action = action.reshape(-1)                     # (B*T,)
+                flatten_old_logp = old_logp.reshape(-1).detach()        # (B*T,)
+            else:
+                # old_logits is old_mean: (B, T, A), action: (B, T, A)
+                old_mean = old_logits
+                old_std = torch.exp(self.actor_log_std).expand_as(old_mean)  # (B, T, A)
+                dist_old = Normal(old_mean, old_std)
+                old_logp = dist_old.log_prob(action).sum(dim=-1)             # (B, T)
 
-            flatten_latent = latent[:, :-1].reshape(-1, feat_dim)
-            flatten_action = action.view(-1)
-            flatten_old_logp = old_logp.view(-1).detach()
+                flatten_latent = latent[:, :-1].reshape(-1, feat_dim)         # (B*T, D)
+                flatten_action = action.reshape(-1, self.action_dim)          # (B*T, A)
+                flatten_old_logp = old_logp.reshape(-1).detach()              # (B*T,)
 
             batch_size = flatten_latent.shape[0]
 
@@ -541,14 +587,31 @@ class PPOAgent(nn.Module):
 
     @torch.no_grad()
     def sample(self, latent, greedy=False):
+        """Sample action from policy."""
         self.eval()
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
-            logits = self.actor(latent)
-            logits = self.unimix(logits)
-            dist = distributions.Categorical(logits=logits)
-            if greedy:
-                action = dist.probs.argmax(dim=-1)
+            if self.is_discrete:
+                logits = self.actor(latent)
+                logits = self.unimix(logits)
+                dist = distributions.Categorical(logits=logits)
+                if greedy:
+                    action = dist.probs.argmax(dim=-1)
+                else:
+                    action = dist.sample()
+                return action, logits
             else:
-                action = dist.sample()
-        return action, logits
+                # Continuous actions
+                mean = self.actor_mean(latent)
+                std = torch.exp(self.actor_log_std).expand_as(mean)
+                dist = Normal(mean, std)
+                if greedy:
+                    action = mean
+                else:
+                    action = dist.sample()
+                # Clip actions to valid range [-1, 1]
+                action = torch.clamp(action, -1.0, 1.0)
+                
+                # For continuous, return mean as "logits" for old_logits compatibility
+                return action, mean
+
 

@@ -37,7 +37,7 @@ from huggingface_hub import PyTorchModelHubMixin
 class Mamba2(nn.Module, PyTorchModelHubMixin):
     def __init__(
         self,
-        d_model,
+        d_model, # TODO: Check what is this and how to define it.
         d_state=128,
         d_conv=4,
         conv_init=None,

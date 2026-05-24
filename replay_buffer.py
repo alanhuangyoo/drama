@@ -8,22 +8,30 @@ import pickle
 
 
 class ReplayBuffer():
-    def __init__(self, config, device="cuda") -> None:
+    def __init__(self, config, device="cuda", action_dim=1, is_discrete=True) -> None:
         self.store_on_gpu = config.BasicSettings.ReplayBufferOnGPU
         max_length = config.JointTrainAgent.BufferMaxLength
-        obs_shape = (config.BasicSettings.ImageSize, config.BasicSettings.ImageSize, config.BasicSettings.ImageChannel)
+        obs_shape = (*config.BasicSettings.ImageSize, config.BasicSettings.ImageChannel)
         self.device = device
+        self.is_discrete = is_discrete  # NEW
+        self.action_dim = action_dim  # NEW
+
+        # Determine action buffer shape
+        if is_discrete:
+            action_shape = (max_length,)  # Scalar for discrete
+        else:
+            action_shape = (max_length, action_dim)  # Vector for continuous
 
         if self.store_on_gpu:
             self.obs_buffer = torch.empty((max_length, *obs_shape), dtype=torch.uint8, device=device, requires_grad=False)
-            self.action_buffer = torch.empty((max_length), dtype=torch.float32, device=device, requires_grad=False)
+            self.action_buffer = torch.empty(action_shape, dtype=torch.float32, device=device, requires_grad=False)  # CHANGED
             self.reward_buffer = torch.empty((max_length), dtype=torch.float32, device=device, requires_grad=False)
             self.termination_buffer = torch.empty((max_length), dtype=torch.float32, device=device, requires_grad=False)
             self.sampled_counter = torch.zeros((max_length), dtype=torch.int32, device=device, requires_grad=False)
             self.imagined_counter = torch.zeros((max_length), dtype=torch.int32, device=device, requires_grad=False)
         else:
             self.obs_buffer = np.empty((max_length, *obs_shape), dtype=np.uint8)
-            self.action_buffer = np.empty((max_length), dtype=np.float32)
+            self.action_buffer = np.empty(action_shape, dtype=np.float32)
             self.reward_buffer = np.empty((max_length), dtype=np.float32)
             self.termination_buffer = np.empty((max_length), dtype=np.float32)
             self.sampled_counter = np.zeros((max_length), dtype=np.int32)
@@ -132,12 +140,25 @@ class ReplayBuffer():
         self.last_pointer = (self.last_pointer + 1) % (self.max_length)
         if self.store_on_gpu:
             self.obs_buffer[self.last_pointer] = torch.from_numpy(obs)
-            self.action_buffer[self.last_pointer] = torch.tensor(action, device=self.device)
+            if self.is_discrete:
+                self.action_buffer[self.last_pointer] = torch.tensor(action, device=self.device)
+            else:
+                # Ensure action is a vector
+                action_tensor = torch.tensor(action, device=self.device)
+                if action_tensor.dim() == 0:
+                    action_tensor = action_tensor.unsqueeze(0)
+                self.action_buffer[self.last_pointer] = action_tensor
             self.reward_buffer[self.last_pointer] = torch.tensor(reward, device=self.device)
             self.termination_buffer[self.last_pointer] = torch.tensor(termination, device=self.device)
         else:
             self.obs_buffer[self.last_pointer] = obs
-            self.action_buffer[self.last_pointer] = action
+            if self.is_discrete:
+                self.action_buffer[self.last_pointer] = action
+            else:
+                # Ensure action is stored as vector
+                if isinstance(action, (int, float)):
+                    action = np.array([action])
+                self.action_buffer[self.last_pointer] = action
             self.reward_buffer[self.last_pointer] = reward
             self.termination_buffer[self.last_pointer] = termination
 
