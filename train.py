@@ -1,7 +1,6 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-os.environ["MUJOCO_GL"] = "osmesa"
-os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+os.environ.setdefault("MUJOCO_GL", "osmesa")
+os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
 import gymnasium
 import argparse
 import numpy as np
@@ -21,7 +20,6 @@ from line_profiler import profile
 import yaml
 from envs.my_memory_maze import MemoryMaze
 from envs.my_atari import Atari
-from env.my_dmc import DMControl
 from eval import eval_episodes
 import warnings
 import ast
@@ -104,9 +102,12 @@ def joint_train_world_model_agent(config, logdir,
 
     if config.BasicSettings.Env_name.startswith('ALE'):
         env = Atari(config.BasicSettings.Env_name, size=config.BasicSettings.ImageSize, seed=config.BasicSettings.Seed)
+        is_discrete = True
     elif config.BasicSettings.Env_name.startswith('memory'):
         env = MemoryMaze(config.BasicSettings.Env_name, size=config.BasicSettings.ImageSize, seed=config.BasicSettings.Seed)
+        is_discrete = True
     elif config.BasicSettings.Env_name.startswith('dm_'):
+        from envs.my_dmc import DMControl
         # Parse dm_control environment name: dm_domain_task
         # Example: dm_cheetah_run, dm_walker_walk, dm_humanoid_stand
         parts = config.BasicSettings.Env_name.split('_')
@@ -321,7 +322,7 @@ def parse_args_and_update_config(config, prefix=''):
                 parser.add_argument(f'--{prefix}{key}', type=lambda x: x.lower() in ['true', '1', 'yes'], default=value)
             elif key == 'dtype':
                 # Special handling for dtype arguments
-                parser.add_argument(f'--{prefix}{key}', type=dtype_mapper, default=value)
+                parser.add_argument(f'--{prefix}{key}', type=dtype_mapper, default=dtype_mapper(value))
             elif isinstance(value, (list, dict)):
                 # Use a custom converter for list/dict-like arguments
                 parser.add_argument(f'--{prefix}{key}', type=lambda x: ast.literal_eval(x), default=value)
@@ -390,6 +391,7 @@ if __name__ == "__main__":
     elif config.BasicSettings.Env_name.startswith('memory'):
         dummy_env = MemoryMaze(config.BasicSettings.Env_name)
     elif config.BasicSettings.Env_name.startswith('dm_'):
+        from envs.my_dmc import DMControl
         parts = config.BasicSettings.Env_name.split('_')
         domain_name = parts[1]
         task_name = '_'.join(parts[2:])
@@ -427,4 +429,3 @@ if __name__ == "__main__":
     joint_train_world_model_agent(config, logdir, replay_buffer, world_model, agent, logger)
 
     logger.close()
-
